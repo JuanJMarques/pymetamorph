@@ -3,9 +3,9 @@ from capstone import *
 from keystone import *
 import pefile
 import random
+from capstone import x86_const
 
 FILE_PATH = 'D:\\vba\\VisualBoyAdvance-SDL.exe'
-
 
 class Pymetamorph(object):
     def __init__(self, file, debug=False, load_file=True):
@@ -14,17 +14,19 @@ class Pymetamorph(object):
         self.debug = debug
         self.instructions = []
         self.cs = Cs(CS_ARCH_X86, CS_MODE_32)
+        self.cs.detail = True
         self.ks = Ks(KS_ARCH_X86, KS_MODE_32)
         if load_file:
             self.pe = pefile.PE(self.file)
             if self.debug:
                 print('loading file')
-            code_section = self.find_section(self.pe.OPTIONAL_HEADER.BaseOfCode)
+            self.base_of_code = self.pe.OPTIONAL_HEADER.BaseOfCode
+            code_section = self.find_section(self.base_of_code)
             if code_section is None:
                 raise Exception('unable to find .text section')
-            raw_code = code_section.get_data(self.pe.OPTIONAL_HEADER.BaseOfCode, code_section.SizeOfRawData)
+            raw_code = code_section.get_data(self.base_of_code, code_section.SizeOfRawData)
             for i in self.cs.disasm(raw_code,
-                                    self.pe.OPTIONAL_HEADER.BaseOfCode):
+                                    self.base_of_code):
                 self.instructions += [MetaIns(i)]
         else:
             self.instructions = []
@@ -47,22 +49,72 @@ class Pymetamorph(object):
         for i in self.instructions:
             if random.random() < 0.2:
                 for j in range(random.randint(0, 10)):
-                    address = self.append_instruction(new_inst, nop, address)
+                    address = self.append_instruction(new_inst, nop, address, True)
         if random.random() < 1:
             for j in range(random.randint(0, 10)):
-                address = self.append_instruction(new_inst, nop, address)
+                address = self.append_instruction(new_inst, nop, address, True)
         self.instructions = new_inst
 
     @staticmethod
-    def append_instruction(instruction_list, instruction, address):
+    def append_instruction(instruction_list, instruction, address, overwrite_original_address=False):
         ins = MetaIns(instruction)
-        ins.original_addr = address
+        if overwrite_original_address:
+            ins.original_addr = address
         ins.new_addr = address
-        instruction_list += ins
+        instruction_list.append(ins)
         return address + instruction.size
+
+    def shuffle_blocks(self, initial_address=None):
+        """
+        divides the code in blocks and shuffles them to morph the code of the program.
+        It also insert a jump instruction to the next block at the end of each code block
+        """
+        size_of_blocks = random.randint(len(self.instructions) / 10, len(self.instructions) / 3)
+        offset = 0
+        blocks = []
+        initial_block_inst = dict()
+        i = 0
+        if initial_address is None:
+            initial_address = self.base_of_code
+        while offset <= len(self.instructions):
+            blocks.append((i, self.instructions[offset:min(offset + size_of_blocks, len(self.instructions))]))
+            initial_block_inst[i] = blocks[i][1][0]
+            i += 1
+            offset += size_of_blocks
+        random.shuffle(blocks)
+        instructions = []
+        for block_number, block in blocks:
+            jump_inst = None
+            if block_number + 1 in initial_block_inst:
+                asm, _ = self.ks.asm('jmp 0x%x' % initial_block_inst[block_number + 1].original_addr)
+                for jump_inst in self.cs.disasm(str(bytearray(asm)), 0):
+                    break
+            if jump_inst is not None:
+                self.append_instruction(block, jump_inst, 0)
+            instructions += block
+        self.update_addresses(instructions, initial_address)
 
     def sort_instructions(self):
         sorted(self.instructions, key=lambda instruction: instruction.new_addr)
+
+    def generate_label_tables(self):
+        jmp_table = []
+        for inst in self.instructions:
+            print(
+                "0x%x:\t%s\t%s" % (inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
+            print('{},{},{},{}'.format(inst.original_inst.id, inst.original_inst.groups,
+                                       inst.original_inst.regs_read, inst.original_inst.regs_write))
+            if (x86_const.X86_INS_JAE <= inst.original_inst.id <= x86_const.X86_INS_JS) \
+                    or x86_const.X86_INS_CALL == inst.original_inst.id:
+                jmp_table.append(int(inst.original_inst.op_str, 16))
+        return jmp_table
+
+    @staticmethod
+    def update_addresses(instructions, initial_address):
+        address = initial_address
+        for instruction in instructions:
+            instruction.new_addr = address
+            address += instruction.size
 
 
 class MetaIns(object):
@@ -72,56 +124,15 @@ class MetaIns(object):
         self.new_addr = original_inst.address
         self.original_bytes = original_inst.bytes
         self.new_bytes = original_inst.bytes
+        self.size = original_inst.size
 
 
 def main(file_path):
-    meta = Pymetamorph(file_path, load_file=False)
-    meta.insert_nop()
+    meta = Pymetamorph(file_path, load_file=True)
+    meta.shuffle_blocks()
+
 
 
 if __name__ == '__main__':
     main(FILE_PATH)
 
-'''
-def main(file_path):
-    print("Opening {}".format(file_path))
-    try:
-        CODE = b"INC ecx; DEC edx"
-        pe = pefile.PE(file_path)
-        eop = pe.OPTIONAL_HEADER.BaseOfCode
-        section = find_section(pe,eop)
-        if not section:
-            raise Exception('no .text section found')
-        code = section.get_data(eop,section.SizeOfRawData)
-        cs = Cs(CS_ARCH_X86,CS_MODE_32)
-        cs2 = Cs(CS_ARCH_X86,CS_MODE_32)
-        ks = Ks(KS_ARCH_X86, KS_MODE_32)
-        asd = []
-        for i in cs.disasm(code, eop):
-            print ("0x%x:\t%s\t%s" % (i.address, i.mnemonic, i.op_str))
-            if i.mnemonic == 'shr' or i.mnemonic == 'rcr' or i.mnemonic == 'sar' or i.mnemonic == 'shl':
-                asd += i.bytes
-            else:
-                encoding, count = ks.asm(i.mnemonic+' '+i.op_str)
-                asd += encoding
-            # print ("{} (number of statements: {}".format(encoding,count))
-        for i in cs2.disasm(str(asd)):
-            print ("0x%x:\t%s\t%s" % (i.address, i.mnemonic, i.op_str))
-
-    except Exception as e:
-        print e
-'''
-
-
-# from keystone import *
-
-# # separate assembly instructions by ; or \n
-# CODE = b"INC ecx; DEC edx"
-#
-# try:
-#     # Initialize engine in X86-32bit mode
-#     ks = Ks(KS_ARCH_X86, KS_MODE_32)
-#     encoding, count = ks.asm(CODE)
-#     print("%s = %s (number of statements: %u)" % (CODE, encoding, count))
-# except KsError as e:
-#     print("ERROR: %s" % e)
