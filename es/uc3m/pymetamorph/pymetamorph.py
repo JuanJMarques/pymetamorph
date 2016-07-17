@@ -3,9 +3,9 @@ from capstone import *
 from keystone import *
 import pefile
 import random
+import sys
 from capstone import x86_const
 
-FILE_PATH = 'D:\\vba\\VisualBoyAdvance-SDL.exe'
 
 class Pymetamorph(object):
     def __init__(self, file, debug=False, load_file=True):
@@ -131,8 +131,6 @@ def main(file_path):
     meta = Pymetamorph(file_path, load_file=True)
     meta.shuffle_blocks()
 
-
-
 if __name__ == '__main__':
-    main(FILE_PATH)
-
+    if len(sys.argv) > 1:
+        main(sys.argv[1])
