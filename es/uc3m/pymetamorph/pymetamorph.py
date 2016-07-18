@@ -5,7 +5,6 @@ import sys
 
 import pefile
 from capstone import *
-from capstone import x86_const
 from keystone import *
 
 
@@ -105,6 +104,7 @@ class Pymetamorph(object):
         sorted(self.instructions, key=lambda instruction: instruction.new_addr)
 
     def generate_label_table(self):
+        from capstone import x86_const
         jmp_table = dict()
         for inst in self.instructions:
             try:
@@ -158,26 +158,32 @@ class Pymetamorph(object):
                 self.label_table[instruction.original_addr] = instruction.new_addr
 
     def aply_label_table(self):
+        from capstone import x86_const
         new_instructions = []
         for instruction in self.instructions:
             if (x86_const.X86_INS_JAE <= instruction.original_inst.id <= x86_const.X86_INS_JS) \
                     or x86_const.X86_INS_CALL == instruction.original_inst.id:
                 new_jump = None
                 asm = None
-                for asm in self.ks.asm('%s 0x%x' % (
-                        instruction.original_inst.mnemonic,
-                        self.label_table[int(instruction.original_inst.op_str), 16])):
-                    break
-                for ins in self.cs.disasm(asm, 0):
-                    new_jump = MetaIns(ins)
-                    new_jump.original_addr = instruction.original_addr
-                    new_jump.new_addr = instruction.new_addr
-                    break
-                new_instructions.append(new_jump)
+                try:
+                    original_address = int(instruction.original_inst.op_str, 16)
+                    if original_address in self.label_table:
+                        for asm in self.ks.asm('%s 0x%x' % (
+                                instruction.original_inst.mnemonic,
+                                self.label_table[original_address])):
+                            asm = str(bytearray(asm))
+                            break
+                    for ins in self.cs.disasm(asm, 0):
+                        new_jump = MetaIns(ins)
+                        new_jump.original_addr = instruction.original_addr
+                        new_jump.new_addr = instruction.new_addr
+                        break
+                    new_instructions.append(new_jump)
+                except ValueError as e:
+                    new_instructions.append(instruction)
             else:
                 new_instructions.append(instruction)
         self.instructions = new_instructions
-
 
 
 class MetaIns(object):
