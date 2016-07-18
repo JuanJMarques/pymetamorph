@@ -43,22 +43,22 @@ class Pymetamorph(object):
                 return section
         return None
 
-    def insert_nop(self):
-        if self.load_file:
-            address = self.instructions[0].new_addr
-        else:
-            address = 0
+    def insert_nop(self, initial_address=None):
+        address = 0
+        if initial_address is None:
+            address = self.base_of_code
         nop = None
-        for nop in self.cs.disasm(str(bytearray([0x90])), 0x1000):
+        for nop in self.cs.disasm(str(bytearray([0x90])), 0):
             break
         new_inst = []
         for i in self.instructions:
             if random.random() < 0.2:
                 for j in range(random.randint(0, 10)):
-                    address = self.append_instruction(new_inst, nop, address, True)
+                    address = self.append_instruction(new_inst, nop, address)
+            address = self.append_meta_instruction(new_inst, i, address)
         if random.random() < 1:
             for j in range(random.randint(0, 10)):
-                address = self.append_instruction(new_inst, nop, address, True)
+                address = self.append_instruction(new_inst, nop, address)
         self.instructions = new_inst
 
     @staticmethod
@@ -69,6 +69,9 @@ class Pymetamorph(object):
         ins.new_addr = address
         instruction_list.append(ins)
         return address + instruction.size
+
+    def append_meta_instruction(self, instruction_list, instruction, address, overwrite_original_address=False):
+        return self.append_instruction(instruction_list, instruction.original_inst, address, overwrite_original_address)
 
     def shuffle_blocks(self, initial_address=None):
         """
@@ -139,6 +142,8 @@ class Pymetamorph(object):
         out.close()
 
     def write_file(self, path):
+        """ TODO load next sections from original file, rewrite them with the appropriate offset on the new file
+         and modify file headers to allocate sections with new ofsets"""
         new_entry_point = self.locate_by_original_address(
             self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint).new_addr
         if self.debug:
@@ -222,8 +227,8 @@ def main(file_path):
     meta.update_label_table()
     meta.debug = True
     meta.apply_label_table()
+    meta.insert_nop()
     meta.write_file('meta.exe')
-    # meta.print_disass()
 
 
 if __name__ == '__main__':
