@@ -10,6 +10,9 @@ from keystone import *
 
 class Pymetamorph(object):
     def __init__(self, file, debug=False, load_file=True):
+        from capstone import x86_const
+        self.NON_COMPILABLE_INSTRUCTION_IDS = [x86_const.X86_INS_RCR, x86_const.X86_INS_SAR, x86_const.X86_INS_SHL,
+                                               x86_const.X86_INS_SHR]
         self.load_file = load_file
         self.file = file
         self.debug = debug
@@ -138,14 +141,21 @@ class Pymetamorph(object):
     def write_file(self, path):
         new_entry_point = self.locate_by_original_address(
             self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint).new_addr
-        self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint = new_entry_point
         if self.debug:
+            print('original file struct')
             print(self.pe.dump_info())
+        self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint = new_entry_point
+        new_code = self.generate_binary_code()
+        self.pe.set_bytes_at_offset(self.base_of_code, new_code)
+        if self.debug:
+            print('new file struct')
+            print(self.pe.dump_info())
+        self.pe.write(path)
 
     def locate_by_original_address(self, Address):
-        for intstruction in self.instructions:
-            if intstruction.original_addr == Address:
-                return intstruction
+        for instruction in self.instructions:
+            if instruction.original_addr == Address:
+                return instruction
         return None
 
     def update_label_table(self):
@@ -157,7 +167,7 @@ class Pymetamorph(object):
             if instruction.original_addr in self.label_table:
                 self.label_table[instruction.original_addr] = instruction.new_addr
 
-    def aply_label_table(self):
+    def apply_label_table(self):
         from capstone import x86_const
         new_instructions = []
         for instruction in self.instructions:
@@ -185,6 +195,16 @@ class Pymetamorph(object):
                 new_instructions.append(instruction)
         self.instructions = new_instructions
 
+    def generate_binary_code(self):
+        code = ''
+        for instruction in self.instructions:
+            if instruction.original_inst.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
+                code += str(instruction.original_inst.bytes)
+            else:
+                bin_inst, _ = self.ks.asm(instruction.original_inst.mnemonic + ' ' + instruction.original_inst.op_str)
+                code += str(bytearray(bin_inst))
+        return code
+
 
 class MetaIns(object):
     def __init__(self, original_inst):
@@ -197,11 +217,11 @@ class MetaIns(object):
 
 
 def main(file_path):
-    meta = Pymetamorph(file_path, load_file=True)
+    meta = Pymetamorph(file_path, load_file=True, debug=True)
     meta.shuffle_blocks()
     meta.update_label_table()
     meta.debug = True
-    meta.aply_label_table()
+    meta.apply_label_table()
     meta.write_file('meta.exe')
     # meta.print_disass()
 
