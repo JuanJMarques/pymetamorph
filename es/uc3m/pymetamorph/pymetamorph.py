@@ -22,26 +22,21 @@ class Pymetamorph(object):
         self.ks = Ks(KS_ARCH_X86, KS_MODE_32)
         self.label_table = None
         if load_file:
-            self.pe = pefile.PE(self.file)
+            self.pe_handler = PEHandler(pefile.PE(self.file))
             if self.debug:
-                print(self.pe.dump_info())
+                print(self.pe_handler.dump())
                 print('loading file')
-            self.base_of_code = self.pe.OPTIONAL_HEADER.BaseOfCode
-            code_section = self.find_section(self.base_of_code)
-            if code_section is None:
+            self.original_entry_point = self.pe_handler.getEntryPointAddress()
+            self.base_of_code = self.pe_handler.getBaseOfCodeAddress()
+            self.code_section = self.pe_handler.findSection(self.base_of_code)
+            if self.code_section is None:
                 raise Exception('unable to find .text section')
-            raw_code = code_section.get_data(self.base_of_code, code_section.SizeOfRawData)
+            raw_code = self.code_section.get_data(self.base_of_code, self.code_section.Misc_VirtualSize)
             for i in self.cs.disasm(raw_code,
                                     self.base_of_code):
                 self.instructions += [MetaIns(i)]
         else:
             self.instructions = []
-
-    def find_section(self, address):
-        for section in self.pe.sections:
-            if section.contains_rva(address):
-                return section
-        return None
 
     def insert_nop(self, initial_address=None):
         address = 0
@@ -85,7 +80,7 @@ class Pymetamorph(object):
         i = 0
         if initial_address is None:
             initial_address = self.base_of_code
-        while offset <= len(self.instructions):
+        while offset < len(self.instructions):
             blocks.append((i, self.instructions[offset:min(offset + size_of_blocks, len(self.instructions))]))
             initial_block_inst[i] = blocks[i][1][0]
             i += 1
@@ -118,11 +113,8 @@ class Pymetamorph(object):
                         or x86_const.X86_INS_CALL == inst.original_inst.id:
                     addr = int(inst.original_inst.op_str, 16)
                     jmp_table[addr] = addr
-                    # jmp_table['0x%x' % addr] = addr
             except:
                 pass
-        # if self.debug:
-        print(sorted(jmp_table))
         return jmp_table
 
     @staticmethod
@@ -141,21 +133,27 @@ class Pymetamorph(object):
                 "0x%x:\t%s\t%s" % (inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
         out.close()
 
-    def write_file(self, path):
+    def write_file(self, filename):
         """ TODO load next sections from original file, rewrite them with the appropriate offset on the new file
          and modify file headers to allocate sections with new ofsets"""
         new_entry_point = self.locate_by_original_address(
-            self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint).new_addr
-        if self.debug:
-            print('original file struct')
-            print(self.pe.dump_info())
-        self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint = new_entry_point
+            self.original_entry_point).new_addr
+        # if self.debug:
+        #     print('original file struct')
+        #     print(self.pe_handler.dump())
+        self.pe_handler.setEntryPointAddress(new_entry_point)
         new_code = self.generate_binary_code()
-        self.pe.set_bytes_at_offset(self.base_of_code, new_code)
+        self.code_section.Misc_VirtualSize = len(new_code)
+        gap = self.pe_handler.getSectionAligment() - (len(new_code) % self.pe_handler.getSectionAligment())
+        gap_bytes = str(bytearray([0 for _ in range(gap)]))
+        new_code += gap_bytes
+        self.code_section.SizeOfRawData = len(new_code)
+        self.pe_handler.setSizeOfImage(self.pe_handler.getSizeOfImage() + self.code_section.SizeOfRawData)
+        self.pe_handler.writeBytes(self.locate_by_original_address(self.base_of_code).original_addr, new_code)
         if self.debug:
             print('new file struct')
-            print(self.pe.dump_info())
-        self.pe.write(path)
+            print(self.pe_handler.dump())
+        self.pe_handler.writeFile(filename)
 
     def locate_by_original_address(self, Address):
         for instruction in self.instructions:
@@ -206,9 +204,24 @@ class Pymetamorph(object):
             if instruction.original_inst.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
                 code += str(instruction.original_inst.bytes)
             else:
-                bin_inst, _ = self.ks.asm(instruction.original_inst.mnemonic + ' ' + instruction.original_inst.op_str)
-                code += str(bytearray(bin_inst))
+                code += str(instruction.original_inst.bytes)
         return code
+
+    def shift_code_section(self):
+        section_pointer = 0
+        section_size = 0
+        self.pe_handler.getLastSectionPointerAndSize()
+        new_code_pointer = section_pointer + section_size
+        self.code_section.PointerToRawData = new_code_pointer
+        self.code_section.VirtualAddress = new_code_pointer
+        self.pe_handler.setBaseOfCode(new_code_pointer)
+        self.update_addresses(self.instructions, new_code_pointer)
+
+    def get_code_size(self):
+        size = 0
+        for inst in self.instructions:
+            size += inst.size
+        return size
 
 
 class MetaIns(object):
@@ -221,13 +234,63 @@ class MetaIns(object):
         self.size = original_inst.size
 
 
+class PEHandler(object):
+    def __init__(self, pe):
+        self.pe = pe
+
+    def dump(self):
+        return self.pe.dump_info()
+
+    def getEntryPointAddress(self):
+        return self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint
+
+    def getBaseOfCodeAddress(self):
+        return self.pe.OPTIONAL_HEADER.BaseOfCode
+
+    def findSection(self, address):
+        for section in self.pe.sections:
+            if section.contains_rva(address):
+                return section
+        return None
+
+    def getLastSectionPointerAndSize(self):
+        for section in self.pe.sections:
+            if section.PointerToRawData > section_pointer:
+                section_pointer = section.PointerToRawData
+                section_size = section.SizeOfRawData
+        return section_pointer, section_size
+
+    def setBaseOfCode(self, new_code_pointer):
+        self.pe.OPTIONAL_HEADER.BaseOfCode = new_code_pointer
+
+    def setEntryPointAddress(self, new_entry_point):
+        self.pe.NT_HEADERS.OPTIONAL_HEADER.AddressOfEntryPoint = new_entry_point
+
+    def getSectionAligment(self):
+        return self.pe.OPTIONAL_HEADER.SectionAlignment
+
+    def getSizeOfImage(self):
+        return self.pe.OPTIONAL_HEADER.SizeOfImage
+
+    def setSizeOfImage(self, size):
+        self.pe.OPTIONAL_HEADER.SizeOfImage = size
+
+    def writeBytes(self, offset, bytes):
+        self.pe.set_bytes_at_offset(offset, bytes)
+
+    def writeFile(self, filename):
+        self.pe.write(filename)
+
+
 def main(file_path):
     meta = Pymetamorph(file_path, load_file=True, debug=True)
     meta.shuffle_blocks()
     meta.update_label_table()
     meta.debug = True
-    meta.apply_label_table()
     meta.insert_nop()
+    meta.generate_new_pe()
+    meta.shift_code_section()
+    meta.apply_label_table()
     meta.write_file('meta.exe')
 
 
