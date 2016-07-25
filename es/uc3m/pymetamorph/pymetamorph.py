@@ -46,14 +46,13 @@ class Pymetamorph(object):
         for nop in self.cs.disasm(str(bytearray([0x90])), 0):
             break
         new_inst = []
+        append = True
         for i in self.instructions:
-            if random.random() < 0.2:
-                for j in range(random.randint(0, 10)):
+            if append and random.random < 0.1:
+                for _ in range(5):
                     address = self.append_instruction(new_inst, nop, address)
+                append = False
             address = self.append_meta_instruction(new_inst, i, address)
-        if random.random() < 1:
-            for j in range(random.randint(0, 10)):
-                address = self.append_instruction(new_inst, nop, address)
         self.instructions = new_inst
 
     @staticmethod
@@ -136,19 +135,20 @@ class Pymetamorph(object):
     def write_file(self, filename):
         """ TODO load next sections from original file, rewrite them with the appropriate offset on the new file
          and modify file headers to allocate sections with new ofsets"""
+        new_code = self.generate_binary_code()
         new_entry_point = self.locate_by_original_address(
             self.original_entry_point).new_addr
         # if self.debug:
         #     print('original file struct')
         #     print(self.pe_handler.dump())
         self.pe_handler.setEntryPointAddress(new_entry_point)
-        new_code = self.generate_binary_code()
         self.code_section.Misc_VirtualSize = len(new_code)
+        self.code_section.Misc_PhysicalAddress = len(new_code)
+        self.code_section.Misc = len(new_code)
         gap = self.pe_handler.getSectionAligment() - (len(new_code) % self.pe_handler.getSectionAligment())
         gap_bytes = str(bytearray([0 for _ in range(gap)]))
         new_code += gap_bytes
         self.code_section.SizeOfRawData = len(new_code)
-        self.pe_handler.setSizeOfImage(self.pe_handler.getSizeOfImage() + self.code_section.SizeOfRawData)
         self.pe_handler.writeBytes(self.locate_by_original_address(self.base_of_code).original_addr, new_code)
         if self.debug:
             print('new file struct')
@@ -199,12 +199,18 @@ class Pymetamorph(object):
         self.instructions = new_instructions
 
     def generate_binary_code(self):
+        offset = self.base_of_code
         code = ''
         for instruction in self.instructions:
             if instruction.original_inst.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
-                code += str(instruction.original_inst.bytes)
+                inst = str(instruction.original_inst.bytes)
             else:
-                code += str(instruction.original_inst.bytes)
+                asm, _ = self.ks.asm(instruction.original_inst.mnemonic + ' ' + instruction.original_inst.op_str,
+                                     offset)
+                inst = str(bytearray(asm))
+            instruction.new_addr = offset
+            code += inst
+            offset += len(inst)
         return code
 
     def shift_code_section(self):
@@ -254,6 +260,8 @@ class PEHandler(object):
         return None
 
     def getLastSectionPointerAndSize(self):
+        section_pointer = 0
+        section_size = 0
         for section in self.pe.sections:
             if section.PointerToRawData > section_pointer:
                 section_pointer = section.PointerToRawData
@@ -284,13 +292,13 @@ class PEHandler(object):
 
 def main(file_path):
     meta = Pymetamorph(file_path, load_file=True, debug=True)
-    meta.shuffle_blocks()
-    meta.update_label_table()
-    meta.debug = True
-    meta.insert_nop()
-    meta.generate_new_pe()
-    meta.shift_code_section()
-    meta.apply_label_table()
+    # meta.shuffle_blocks()
+    # meta.insert_nop()
+    # meta.update_label_table()
+    # # meta.debug = True
+    # # meta.generate_new_pe()
+    # # meta.shift_code_section()
+    # meta.apply_label_table()
     meta.write_file('meta.exe')
 
 
