@@ -32,9 +32,14 @@ class Pymetamorph(object):
             if self.code_section is None:
                 raise Exception('unable to find .text section')
             raw_code = self.code_section.get_data(self.base_of_code, self.code_section.Misc_VirtualSize)
+            offset = self.base_of_code
             for i in self.cs.disasm(raw_code,
                                     self.base_of_code):
-                self.instructions += [MetaIns(i)]
+                if offset != i.address:
+                    print(i.address)
+                asm, size = self.generate_binary_instruction(i, offset)
+                self.instructions += [MetaIns(i, asm, offset)]
+                offset += size
         else:
             self.instructions = []
 
@@ -111,7 +116,7 @@ class Pymetamorph(object):
                 if (x86_const.X86_INS_JAE <= inst.original_inst.id <= x86_const.X86_INS_JS) \
                         or x86_const.X86_INS_CALL == inst.original_inst.id:
                     addr = int(inst.original_inst.op_str, 16)
-                    jmp_table[addr] = addr
+                    jmp_table[addr] = None
             except:
                 pass
         return jmp_table
@@ -163,54 +168,66 @@ class Pymetamorph(object):
 
     def update_label_table(self):
         self.label_table = self.generate_label_table()
-        self.get_new_addresses_of_labels()
+        self.get_instructions_from_labels()
 
-    def get_new_addresses_of_labels(self):
+    def get_instructions_from_labels(self):
         for instruction in self.instructions:
             if instruction.original_addr in self.label_table:
-                self.label_table[instruction.original_addr] = instruction.new_addr
+                self.label_table[instruction.original_addr] = instruction
 
     def apply_label_table(self):
         from capstone import x86_const
-        new_instructions = []
-        for instruction in self.instructions:
-            if (x86_const.X86_INS_JAE <= instruction.original_inst.id <= x86_const.X86_INS_JS) \
-                    or x86_const.X86_INS_CALL == instruction.original_inst.id:
-                new_jump = None
-                asm = None
-                try:
-                    original_address = int(instruction.original_inst.op_str, 16)
-                    if original_address in self.label_table:
-                        for asm in self.ks.asm('%s 0x%x' % (
-                                instruction.original_inst.mnemonic,
-                                self.label_table[original_address])):
+        re_apply = False
+        first = True
+        num_reps = 0
+        while first or re_apply:
+            first = False
+            re_apply = False
+            offset = self.base_of_code
+            num_reps += 1
+            for instruction in self.instructions:
+                if instruction.new_addr != offset:
+                    if not re_apply:
+                        re_apply = True
+                    asm, _ = self.generate_binary_instruction(instruction.original_inst, offset)
+                    instruction.new_bytes = asm
+                    instruction.new_addr = offset
+                if (x86_const.X86_INS_JAE <= instruction.original_inst.id <= x86_const.X86_INS_JS) \
+                        or x86_const.X86_INS_CALL == instruction.original_inst.id:
+                    try:
+                        original_address = int(instruction.original_inst.op_str, 16)
+                        if original_address in self.label_table and self.label_table[original_address] is not None:
+                            asm, _ = self.ks.asm('%s 0x%x' % (instruction.original_inst.mnemonic,
+                                                              self.label_table[original_address].new_addr), offset)
                             asm = str(bytearray(asm))
-                            break
-                    for ins in self.cs.disasm(asm, 0):
-                        new_jump = MetaIns(ins)
-                        new_jump.original_addr = instruction.original_addr
-                        new_jump.new_addr = instruction.new_addr
-                        break
-                    new_instructions.append(new_jump)
-                except ValueError as e:
-                    new_instructions.append(instruction)
-            else:
-                new_instructions.append(instruction)
-        self.instructions = new_instructions
+                            if len(asm) != len(instruction.new_bytes):
+                                if len(asm) < len(instruction.new_bytes):
+                                    asm += str(bytearray([0x90 for i in range(len(instruction.new_bytes) - len(asm))]))
+                            instruction.new_bytes = asm
+                    except ValueError as e:
+                        pass
+                offset += len(instruction.new_bytes)
+        return num_reps
+
+    def generate_binary_instruction(self, instruction, offset):
+        if instruction.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
+            return str(instruction.bytes), len(instruction.bytes)
+        else:
+            asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str, offset)
+            inst = str(bytearray(asm))
+            if offset == 20748:
+                for i in self.cs.disasm(inst, offset):
+                    asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str, instruction.address)
+                    inst = str(bytearray(asm))
+                    print(instruction.mnemonic + ' ' + instruction.op_str)
+                    print(i.mnemonic + ' ' + i.op_str)
+            return inst, len(inst)
 
     def generate_binary_code(self):
         offset = self.base_of_code
         code = ''
         for instruction in self.instructions:
-            if instruction.original_inst.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
-                inst = str(instruction.original_inst.bytes)
-            else:
-                asm, _ = self.ks.asm(instruction.original_inst.mnemonic + ' ' + instruction.original_inst.op_str,
-                                     offset)
-                inst = str(bytearray(asm))
-            instruction.new_addr = offset
-            code += inst
-            offset += len(inst)
+            code += instruction.new_bytes
         return code
 
     def shift_code_section(self):
@@ -226,18 +243,26 @@ class Pymetamorph(object):
     def get_code_size(self):
         size = 0
         for inst in self.instructions:
-            size += inst.size
+            size += len(inst.new_bytes)
         return size
 
 
 class MetaIns(object):
-    def __init__(self, original_inst):
+    def __init__(self, original_inst, new_bytes=None, new_address=None):
         self.original_inst = original_inst
         self.original_addr = original_inst.address
-        self.new_addr = original_inst.address
+        if new_address is None:
+            self.new_addr = original_inst.address
+        else:
+            self.new_addr = new_address
         self.original_bytes = original_inst.bytes
-        self.new_bytes = original_inst.bytes
-        self.size = original_inst.size
+        if new_bytes is None:
+            self.new_bytes = original_inst.bytes
+        else:
+            self.new_bytes = new_bytes
+
+
+# self.size = original_inst.size
 
 
 class PEHandler(object):
@@ -294,11 +319,8 @@ def main(file_path):
     meta = Pymetamorph(file_path, load_file=True, debug=True)
     # meta.shuffle_blocks()
     # meta.insert_nop()
-    # meta.update_label_table()
-    # # meta.debug = True
-    # # meta.generate_new_pe()
-    # # meta.shift_code_section()
-    # meta.apply_label_table()
+    meta.update_label_table()
+    meta.apply_label_table()
     meta.write_file('meta.exe')
 
 
