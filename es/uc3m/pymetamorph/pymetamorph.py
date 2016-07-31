@@ -19,8 +19,11 @@ class Pymetamorph(object):
         self.instructions = []
         self.cs = Cs(CS_ARCH_X86, CS_MODE_32)
         self.cs.detail = True
+        self.cs.syntax = CS_OPT_SYNTAX_ATT
         self.ks = Ks(KS_ARCH_X86, KS_MODE_32)
+        self.ks.syntax = KS_OPT_SYNTAX_ATT
         self.label_table = None
+        self.original_inst = []
         if load_file:
             self.pe_handler = PEHandler(pefile.PE(self.file))
             if self.debug:
@@ -32,14 +35,10 @@ class Pymetamorph(object):
             if self.code_section is None:
                 raise Exception('unable to find .text section')
             raw_code = self.code_section.get_data(self.base_of_code, self.code_section.Misc_VirtualSize)
-            offset = self.base_of_code
             for i in self.cs.disasm(raw_code,
                                     self.base_of_code):
-                if offset != i.address:
-                    print(i.address)
-                asm, size = self.generate_binary_instruction(i, offset)
-                self.instructions += [MetaIns(i, asm, offset)]
-                offset += size
+                self.original_inst.append(i)
+                self.instructions.append(MetaIns(i))
         else:
             self.instructions = []
 
@@ -128,24 +127,31 @@ class Pymetamorph(object):
             instruction.new_addr = address
             address += instruction.size
 
-    def print_disass(self):
-        out = open("code.asm", 'w')
+    def print_new_dissas(self, output_path):
+        offset = self.base_of_code
+        code = ''
+        for inst in self.instructions:
+            code += str(inst.new_bytes)
+        out = open(output_path, 'w')
+        for inst in self.cs.disasm(code, offset):
+            out.write("0x%x:\t%s\t%s\n" % (
+                inst.address, inst.mnemonic, inst.op_str))
+        out.close()
+
+    def print_disass(self, output_path, ):
+        out = open(output_path, 'w')
         for inst in self.instructions:
             out.write("0x%x:\t%s\t%s\n" % (
                 inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
-            print(
-                "0x%x:\t%s\t%s" % (inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
         out.close()
 
     def write_file(self, filename):
         """ TODO load next sections from original file, rewrite them with the appropriate offset on the new file
          and modify file headers to allocate sections with new ofsets"""
         new_code = self.generate_binary_code()
+        self.locate_by_original_address(self.original_entry_point)
         new_entry_point = self.locate_by_original_address(
             self.original_entry_point).new_addr
-        # if self.debug:
-        #     print('original file struct')
-        #     print(self.pe_handler.dump())
         self.pe_handler.setEntryPointAddress(new_entry_point)
         self.code_section.Misc_VirtualSize = len(new_code)
         self.code_section.Misc_PhysicalAddress = len(new_code)
@@ -154,7 +160,8 @@ class Pymetamorph(object):
         gap_bytes = str(bytearray([0 for _ in range(gap)]))
         new_code += gap_bytes
         self.code_section.SizeOfRawData = len(new_code)
-        self.pe_handler.writeBytes(self.locate_by_original_address(self.base_of_code).original_addr, new_code)
+        if not self.pe_handler.writeBytes(self.base_of_code, new_code):
+            raise Exception('code out of text section')
         if self.debug:
             print('new file struct')
             print(self.pe_handler.dump())
@@ -213,22 +220,24 @@ class Pymetamorph(object):
         if instruction.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
             return str(instruction.bytes), len(instruction.bytes)
         else:
-            asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str, offset)
-            inst = str(bytearray(asm))
-            if offset == 20748:
-                for i in self.cs.disasm(inst, offset):
-                    asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str, instruction.address)
+            try:
+                asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str, offset)
+                inst = str(bytearray(asm))
+            except KsError as e:
+                print(
+                    "0x%x:\t%s\t%s" % (
+                        instruction.address, instruction.mnemonic, instruction.op_str))
+                print(instruction.mnemonic + ' ' + instruction.op_str + ' ' + str(offset))
+                if instruction.op_str.endswith('%fs:'):
+                    asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str + '0', offset)
                     inst = str(bytearray(asm))
-                    print(instruction.mnemonic + ' ' + instruction.op_str)
-                    print(i.mnemonic + ' ' + i.op_str)
             return inst, len(inst)
 
     def generate_binary_code(self):
-        offset = self.base_of_code
         code = ''
         for instruction in self.instructions:
             code += instruction.new_bytes
-        return code
+        return str(code)
 
     def shift_code_section(self):
         section_pointer = 0
@@ -261,6 +270,9 @@ class MetaIns(object):
         else:
             self.new_bytes = new_bytes
 
+    @property
+    def size(self):
+        return len(self.new_bytes)
 
 # self.size = original_inst.size
 
@@ -309,7 +321,7 @@ class PEHandler(object):
         self.pe.OPTIONAL_HEADER.SizeOfImage = size
 
     def writeBytes(self, offset, bytes):
-        self.pe.set_bytes_at_offset(offset, bytes)
+        return self.pe.set_bytes_at_offset(offset, bytes)
 
     def writeFile(self, filename):
         self.pe.write(filename)
@@ -317,11 +329,12 @@ class PEHandler(object):
 
 def main(file_path):
     meta = Pymetamorph(file_path, load_file=True, debug=True)
-    # meta.shuffle_blocks()
-    # meta.insert_nop()
+    meta.shuffle_blocks()
     meta.update_label_table()
     meta.apply_label_table()
     meta.write_file('meta.exe')
+    meta.print_disass('original.asm')
+    meta.print_new_dissas('new.asm')
 
 
 if __name__ == '__main__':
