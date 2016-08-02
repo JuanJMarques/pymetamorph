@@ -1,2 +1,2 @@
 # pymetamorph
-metamorphic engine in python
+metamorphic engine in python for windows x86 executables
