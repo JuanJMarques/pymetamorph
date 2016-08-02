@@ -34,11 +34,17 @@ class Pymetamorph(object):
             self.code_section = self.pe_handler.findSection(self.base_of_code)
             if self.code_section is None:
                 raise Exception('unable to find .text section')
-            raw_code = self.code_section.get_data(self.base_of_code, self.code_section.Misc_VirtualSize)
+            self.code_size = self.code_section.Misc_VirtualSize
+            raw_code = self.code_section.get_data(self.base_of_code, self.code_size)
             for i in self.cs.disasm(raw_code,
                                     self.base_of_code):
                 self.original_inst.append(i)
-                self.instructions.append(MetaIns(i))
+                inst = MetaIns(i)
+                if not len(self.instructions) == 0:
+                    previous = self.instructions[-1]
+                    inst.previous_instruction = previous
+                    previous.next_instruction = inst
+                self.instructions.append(inst)
         else:
             self.instructions = []
 
@@ -220,14 +226,11 @@ class Pymetamorph(object):
         if instruction.id in self.NON_COMPILABLE_INSTRUCTION_IDS:
             return str(instruction.bytes), len(instruction.bytes)
         else:
+            inst = None
             try:
                 asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str, offset)
                 inst = str(bytearray(asm))
             except KsError as e:
-                print(
-                    "0x%x:\t%s\t%s" % (
-                        instruction.address, instruction.mnemonic, instruction.op_str))
-                print(instruction.mnemonic + ' ' + instruction.op_str + ' ' + str(offset))
                 if instruction.op_str.endswith('%fs:'):
                     asm, _ = self.ks.asm(instruction.mnemonic + ' ' + instruction.op_str + '0', offset)
                     inst = str(bytearray(asm))
@@ -257,7 +260,8 @@ class Pymetamorph(object):
 
 
 class MetaIns(object):
-    def __init__(self, original_inst, new_bytes=None, new_address=None):
+    def __init__(self, original_inst, new_bytes=None, new_address=None, next_instruction=None,
+                 previous_instruction=None):
         self.original_inst = original_inst
         self.original_addr = original_inst.address
         if new_address is None:
@@ -269,10 +273,29 @@ class MetaIns(object):
             self.new_bytes = original_inst.bytes
         else:
             self.new_bytes = new_bytes
+        self._next_instruction = next_instruction
+        self._previous_instruction = previous_instruction
+
+    @property
+    def next_instruction(self):
+        return self._next_instruction
+
+    @next_instruction.setter
+    def next_instruction(self, value):
+        self._next_instruction = value
+
+    @property
+    def previous_instruction(self):
+        return self._previous_instruction
+
+    @previous_instruction.setter
+    def previous_instruction(self, value):
+        self._previous_instruction = value
 
     @property
     def size(self):
         return len(self.new_bytes)
+
 
 # self.size = original_inst.size
 
