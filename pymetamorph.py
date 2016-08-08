@@ -110,6 +110,90 @@ class Pymetamorph(object):
         self.update_addresses(instructions, initial_address)
         self.instructions = instructions
 
+    def shuffle_functions(self):
+        initial_address = self.base_of_code
+        functions = self.__get_functions()
+        random.shuffle(functions)
+        instructions = []
+        for function in functions:
+            instructions += function
+        self.update_addresses(instructions, initial_address)
+        self.instructions = instructions
+
+    def __get_functions(self):
+        from capstone import x86_const
+        inf_margin = self.base_of_code
+        sup_margin = self.base_of_code + self.code_size
+        index = self.original_entry_point
+        func_table = []
+        function_calls = set()
+        function_calls.add(index)
+        processed_functions = []
+        processed_addrs = []
+        while len(function_calls) > 0:
+            addr = function_calls.pop()
+            processed_functions.append(addr)
+            function = []
+            func_table.append(function)
+            inst = self.locate_by_original_address(addr)
+            jmp_table = set()
+            # processed_jumps = []
+            cont = True
+            while cont:
+                function.append(inst)
+                processed_addrs.append(inst.original_addr)
+                if x86_const.X86_GRP_JUMP in inst.original_inst.groups:
+                    if inst.original_inst.operands[0].type == x86_const.X86_OP_IMM:
+                        jump_address = inst.original_inst.operands[0].imm
+                        if inf_margin <= jump_address < sup_margin:
+                            if x86_const.X86_INS_JMP == inst.original_inst.id:
+                                # if jump_address not in jmp_table \
+                                #         and jump_address not in processed_addrs:
+                                #         and jump_address not in processed_jumps \
+                                if jump_address not in processed_addrs:
+                                    inst.new_bytes = str(bytearray([0x90]))
+                                    inst = self.locate_by_original_address(jump_address)
+                                else:
+                                    cont = (len(jmp_table) > 0)
+                                    if cont:
+                                        jump_address = jmp_table.pop()
+                                        # processed_jumps.append(jump_address)
+                                        inst = self.locate_by_original_address(jump_address)
+                            else:
+                                if jump_address not in jmp_table \
+                                        and jump_address not in processed_addrs:
+                                    # and jump_address not in processed_jumps \
+                                    jmp_table.add(jump_address)
+                                cont = (inst.next_instruction is not None)
+                                inst = inst.next_instruction
+                    else:
+                        cont = (len(jmp_table) > 0)
+                        if cont:
+                            jump_address = jmp_table.pop()
+                            # processed_jumps.append(jump_address)
+                            inst = self.locate_by_original_address(jump_address)
+                elif x86_const.X86_GRP_CALL in inst.original_inst.groups \
+                        and inst.original_inst.operands[0].type == x86_const.X86_OP_IMM:
+                    call_address = inst.original_inst.operands[0].imm
+                    if inf_margin <= call_address < sup_margin \
+                            and call_address not in processed_addrs:
+                        function_calls.add(call_address)
+                        # print(
+                        #     "0x%x:\t%s\t%s" % (
+                        #     inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
+                    cont = (inst.next_instruction is not None)
+                    inst = inst.next_instruction
+                elif x86_const.X86_GRP_RET in inst.original_inst.groups:
+                    cont = (len(jmp_table) > 0)
+                    if cont:
+                        jump_address = jmp_table.pop()
+                        # processed_jumps.append(jump_address)
+                        inst = self.locate_by_original_address(jump_address)
+                else:
+                    cont = (inst.next_instruction is not None)
+                    inst = inst.next_instruction
+        return func_table
+
     def sort_instructions(self):
         sorted(self.instructions, key=lambda instruction: instruction.new_addr)
 
@@ -118,12 +202,13 @@ class Pymetamorph(object):
         jmp_table = dict()
         for inst in self.instructions:
             try:
-                if (x86_const.X86_INS_JAE <= inst.original_inst.id <= x86_const.X86_INS_JS) \
-                        or x86_const.X86_INS_CALL == inst.original_inst.id:
-                    addr = int(inst.original_inst.op_str, 16)
+                if (x86_const.X86_GRP_JUMP in inst.original_inst.groups
+                    or x86_const.X86_GRP_CALL in inst.original_inst.groups) \
+                        and inst.original_inst.operands[0].type == x86_const.X86_OP_IMM:
+                    addr = int(inst.original_inst.operands[0].imm)
                     jmp_table[addr] = None
-            except:
-                pass
+            except Exception as e:
+                raise e
         return jmp_table
 
     @staticmethod
@@ -202,23 +287,30 @@ class Pymetamorph(object):
                 if instruction.new_addr != offset:
                     if not re_apply:
                         re_apply = True
-                    asm, _ = self.generate_binary_instruction(instruction.original_inst, offset)
-                    instruction.new_bytes = asm
-                    instruction.new_addr = offset
-                if (x86_const.X86_INS_JAE <= instruction.original_inst.id <= x86_const.X86_INS_JS) \
-                        or x86_const.X86_INS_CALL == instruction.original_inst.id:
+                if x86_const.X86_GRP_JUMP in instruction.original_inst.groups \
+                        or x86_const.X86_GRP_CALL in instruction.original_inst.groups:
                     try:
-                        original_address = int(instruction.original_inst.op_str, 16)
-                        if original_address in self.label_table and self.label_table[original_address] is not None:
-                            asm, _ = self.ks.asm('%s 0x%x' % (instruction.original_inst.mnemonic,
-                                                              self.label_table[original_address].new_addr), offset)
+                        if instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
+                            original_address = instruction.original_inst.operands[0].imm
+                            if original_address in self.label_table and self.label_table[original_address] is not None:
+                                asm, _ = self.ks.asm('%s 0x%x' % (instruction.original_inst.mnemonic,
+                                                                  self.label_table[original_address].new_addr), offset)
+                                asm = str(bytearray(asm))
+                                instruction.new_bytes = asm
+                            else:
+                                asm, _ = self.ks.asm(instruction.original_inst.mnemonic + ' '
+                                                     + instruction.original_inst.op_str, offset)
+                                asm = str(bytearray(asm))
+                                instruction.new_bytes = asm
+                        else:
+                            asm, _ = self.ks.asm(instruction.original_inst.mnemonic + ' '
+                                                 + instruction.original_inst.op_str, offset)
                             asm = str(bytearray(asm))
-                            if len(asm) != len(instruction.new_bytes):
-                                if len(asm) < len(instruction.new_bytes):
-                                    asm += str(bytearray([0x90 for i in range(len(instruction.new_bytes) - len(asm))]))
                             instruction.new_bytes = asm
+
                     except ValueError as e:
                         pass
+                instruction.new_addr = offset
                 offset += len(instruction.new_bytes)
         return num_reps
 
@@ -352,11 +444,12 @@ class PEHandler(object):
 
 def main(file_path):
     meta = Pymetamorph(file_path, load_file=True, debug=True)
-    meta.shuffle_blocks()
+    meta.shuffle_functions()
+    # meta.shuffle_blocks()
     meta.update_label_table()
     meta.apply_label_table()
-    meta.write_file('meta.exe')
     meta.print_disass('original.asm')
+    meta.write_file('meta.exe')
     meta.print_new_dissas('new.asm')
 
 
