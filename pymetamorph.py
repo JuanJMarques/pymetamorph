@@ -310,6 +310,15 @@ class Pymetamorph(object):
 
                     except ValueError as e:
                         pass
+                if len(instruction.new_bytes) != len(instruction.original_bytes):
+                    print('-----------------------------------------------------------------------------------------')
+                    print(b'0x{:x}:\t{}\t{}\t{}'.format(
+                        instruction.original_inst.address, instruction.original_inst.mnemonic,
+                        instruction.original_inst.op_str, instruction.original_bytes))
+                    for ins in self.cs.disasm(instruction.new_bytes, offset):
+                        print(b'0x{:x}:\t{}\t{}\t{}'.format(
+                            ins.address, ins.mnemonic, ins.op_str, instruction.new_bytes))
+                    print('-----------------------------------------------------------------------------------------')
                 instruction.new_addr = offset
                 offset += len(instruction.new_bytes)
         return num_reps
@@ -349,6 +358,63 @@ class Pymetamorph(object):
         for inst in self.instructions:
             size += len(inst.new_bytes)
         return size
+
+    def permute_registers(self):
+        functions = self.__get_functions()
+        for function in functions:
+            registers = self.get_registers_from_function(function)
+            copy = [x for x in registers]
+            random.shuffle(copy, random.random)
+            permutation_map = dict()
+            for i in range(len(registers)):
+                permutation_map[registers[i]] = copy[i]
+            self.apply_permutation(function, permutation_map)
+        pass
+
+    @staticmethod
+    def get_registers_from_function(function):
+        from capstone import x86_const
+        registers = set()
+        for instruction in function:
+            operands = instruction.original_inst.operands
+            for operand in operands:
+                if operand.type == x86_const.X86_OP_REG \
+                        and (operand.reg == x86_const.X86_REG_EDI
+                             or operand.reg == x86_const.X86_REG_ESI
+                             or operand.reg == x86_const.X86_REG_EBX
+                             or operand.reg == x86_const.X86_REG_ECX
+                             or operand.reg == x86_const.X86_REG_EDX):
+                    registers.add(operand.reg)
+        return list(registers)
+
+    def apply_permutation(self, function, permutation_map):
+        from capstone import x86_const
+        new_reg_names = list()
+        if len(function) > 0:
+            aux_inst = function[0].original_inst
+            for reg in permutation_map.values():
+                new_reg_names.append(aux_inst.reg_name(reg))
+        for instruction in function:
+            operands = instruction.original_inst.operands
+            new_inst_str = instruction.original_inst.mnemonic + ' ' + instruction.original_inst.op_str
+            recompile = False
+            counter = 0
+            for operand in operands:
+                if operand.type == x86_const.X86_OP_REG \
+                        and operand.reg in permutation_map \
+                        and (operand.reg == x86_const.X86_REG_EDI
+                             or operand.reg == x86_const.X86_REG_ESI
+                             or operand.reg == x86_const.X86_REG_EBX
+                             or operand.reg == x86_const.X86_REG_ECX
+                             or operand.reg == x86_const.X86_REG_EDX):
+                    new_inst_str = new_inst_str.replace(instruction.original_inst.reg_name(operand.reg)
+                                                        , '{' + str(counter) + '}')
+                    counter += 1
+                    recompile = True
+            if recompile:
+                new_inst_str = new_inst_str.format(*new_reg_names)
+                asm, _ = self.ks.asm(new_inst_str, instruction.new_addr)
+                instruction.new_bytes = str(bytearray(asm))
 
 
 class MetaIns(object):
@@ -444,8 +510,8 @@ class PEHandler(object):
 
 def main(file_path):
     meta = Pymetamorph(file_path, load_file=True, debug=True)
+    meta.permute_registers()
     meta.shuffle_functions()
-    # meta.shuffle_blocks()
     meta.update_label_table()
     meta.apply_label_table()
     meta.print_disass('original.asm')
