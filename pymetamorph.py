@@ -26,7 +26,7 @@ class Pymetamorph(object):
         self.label_table = None
         self.original_inst = []
         if load_file:
-            self.pe_handler = PEHandler(pefile.PE(self.file))
+            self.pe_handler = PEHandler(self.file)
             if self.debug:
                 print(self.pe_handler.dump())
                 print('loading file')
@@ -195,9 +195,6 @@ class Pymetamorph(object):
                     inst = inst.next_instruction
         return func_table
 
-    def sort_instructions(self):
-        sorted(self.instructions, key=lambda instruction: instruction.new_addr)
-
     def generate_label_table(self):
         from capstone import x86_const
         jmp_table = dict()
@@ -344,16 +341,6 @@ class Pymetamorph(object):
             code += instruction.new_bytes
         return str(code)
 
-    def shift_code_section(self):
-        section_pointer = 0
-        section_size = 0
-        self.pe_handler.getLastSectionPointerAndSize()
-        new_code_pointer = section_pointer + section_size
-        self.code_section.PointerToRawData = new_code_pointer
-        self.code_section.VirtualAddress = new_code_pointer
-        self.pe_handler.setBaseOfCode(new_code_pointer)
-        self.update_addresses(self.instructions, new_code_pointer)
-
     def get_code_size(self):
         size = 0
         for inst in self.instructions:
@@ -369,7 +356,7 @@ class Pymetamorph(object):
             permutation_map = dict()
             for i in range(len(registers)):
                 permutation_map[registers[i]] = copy[i]
-            self.apply_permutation(function, permutation_map)
+            self.apply_register_permutation(function, permutation_map)
         pass
 
     @staticmethod
@@ -382,13 +369,11 @@ class Pymetamorph(object):
                 if operand.type == x86_const.X86_OP_REG \
                         and (operand.reg == x86_const.X86_REG_EDI
                              or operand.reg == x86_const.X86_REG_ESI
-                             or operand.reg == x86_const.X86_REG_EBX
-                             or operand.reg == x86_const.X86_REG_ECX
-                             or operand.reg == x86_const.X86_REG_EDX):
+                             or operand.reg == x86_const.X86_REG_EBX):
                     registers.add(operand.reg)
         return list(registers)
 
-    def apply_permutation(self, function, permutation_map):
+    def apply_register_permutation(self, function, permutation_map):
         from capstone import x86_const
         new_reg_names = list()
         if len(function) > 0:
@@ -405,9 +390,7 @@ class Pymetamorph(object):
                         and operand.reg in permutation_map \
                         and (operand.reg == x86_const.X86_REG_EDI
                              or operand.reg == x86_const.X86_REG_ESI
-                             or operand.reg == x86_const.X86_REG_EBX
-                             or operand.reg == x86_const.X86_REG_ECX
-                             or operand.reg == x86_const.X86_REG_EDX):
+                             or operand.reg == x86_const.X86_REG_EBX):
                     new_inst_str = new_inst_str.replace(instruction.original_inst.reg_name(operand.reg)
                                                         , '{' + str(counter) + '}')
                     counter += 1
@@ -421,74 +404,78 @@ class Pymetamorph(object):
         from capstone import x86_const
         for instruction in self.instructions:
             try:
-                if instruction.original_inst.id == x86_const.X86_INS_ADD:
-                    if len(instruction.original_inst.operands) == 2 \
-                            and instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
-                        new_inst_str = instruction.original_inst.mnemonic.replace('add', 'sub') + ' ' \
-                                       + instruction.original_inst.op_str.replace(
-                            '{:x}'.format(instruction.original_inst.operands[0].imm),
-                            '{:x}'.format(self.convert_to_unsigned(-1 * instruction.original_inst.operands[0].imm,
-                                                                   instruction.original_inst.operands[0].size)))
-                        # asm,_ = self.ks.asm(new_inst_str)
-                        # instruction.new_bytes=str(asm)
-                elif instruction.original_inst.id == x86_const.X86_INS_SUB:
-                    if len(instruction.original_inst.operands) == 2 \
-                            and instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
-                        new_inst_str = instruction.original_inst.mnemonic.replace('sub', 'add') + ' ' \
-                                       + instruction.original_inst.op_str.replace(
-                            '{:x}'.format(instruction.original_inst.operands[0].imm),
-                            '{:x}'.format(self.convert_to_unsigned(-1 * instruction.original_inst.operands[0].imm,
-                                                                   instruction.original_inst.operands[0].size)))
-                        asm, _ = self.ks.asm(new_inst_str)
-                        instruction.new_bytes = str(asm)
-                elif instruction.original_inst.id == x86_const.X86_INS_XOR:
-                    if len(instruction.original_inst.operands) == 2 and ((instruction.original_inst.operands[
-                                                                              0].type == x86_const.X86_OP_IMM and
-                                                                                  instruction.original_inst.operands[
-                                                                                      0].imm == 0)
-                                                                         or (
-                                        instruction.original_inst.operands[1].type == x86_const.X86_OP_IMM and
-                                        instruction.original_inst.operands[1].imm == 0)
-                                                                         or (
-                                            instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and
-                                            instruction.original_inst.operands[1].type == x86_const.X86_OP_REG
-                                and instruction.original_inst.operands[0].reg == instruction.original_inst.operands[
-                                    1].reg)):
-                        # print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
-                        #                          instruction.original_inst.op_str))
-                        pass
-                elif instruction.original_inst.id == x86_const.X86_INS_OR:
-                    if len(instruction.original_inst.operands) == 2 and \
-                                    instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and \
-                                    instruction.original_inst.operands[1].type == x86_const.X86_OP_REG and \
-                                    instruction.original_inst.operands[0].reg == instruction.original_inst.operands[
-                                1].reg:
-                        new_inst_str = self.insn_name(x86_const.X86_INS_CMP) + ' $0,' \
-                                       + instruction.original_inst.reg_name(instruction.original_inst.operands[0].reg)
-                        asm, _ = self.ks.asm(new_inst_str)
-                        instruction.new_bytes = str(asm)
-                    pass
-                elif instruction.original_inst.id == x86_const.X86_INS_AND:
-                    # print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
-                    #                          instruction.original_inst.op_str))
-                    if len(instruction.original_inst.operands) == 2:
-                        if instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM and \
-                                        instruction.original_inst.operands[0].imm == 0:
-                            new_inst_str = instruction.original_inst.mnemonic.replace('and', 'mov') + ' ' \
-                                           + instruction.original_inst.op_str
+                rndm = random.random()
+                if rndm < 0.3:
+                    if instruction.original_inst.id == x86_const.X86_INS_ADD:
+                        if len(instruction.original_inst.operands) == 2 \
+                                and instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
+                            new_inst_str = instruction.original_inst.mnemonic.replace('add', 'sub') + ' ' \
+                                           + instruction.original_inst.op_str.replace(
+                                '{:x}'.format(instruction.original_inst.operands[0].imm),
+                                '{:x}'.format(self.convert_to_unsigned(-1 * instruction.original_inst.operands[0].imm,
+                                                                       instruction.original_inst.operands[0].size)))
                             asm, _ = self.ks.asm(new_inst_str)
                             instruction.new_bytes = str(asm)
-                        elif instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and \
+                    elif instruction.original_inst.id == x86_const.X86_INS_SUB:
+                        if len(instruction.original_inst.operands) == 2 \
+                                and instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
+                            new_inst_str = instruction.original_inst.mnemonic.replace('sub', 'add') + ' ' \
+                                           + instruction.original_inst.op_str.replace(
+                                '{:x}'.format(instruction.original_inst.operands[0].imm),
+                                '{:x}'.format(self.convert_to_unsigned(-1 * instruction.original_inst.operands[0].imm,
+                                                                       instruction.original_inst.operands[0].size)))
+                            asm, _ = self.ks.asm(new_inst_str)
+                            instruction.new_bytes = str(asm)
+                    elif instruction.original_inst.id == x86_const.X86_INS_XOR:
+                        if len(instruction.original_inst.operands) == 2 and ((instruction.original_inst.operands[
+                                                                                  0].type == x86_const.X86_OP_IMM and
+                                                                                      instruction.original_inst.operands[
+                                                                                          0].imm == 0)
+                                                                             or (
+                                            instruction.original_inst.operands[1].type == x86_const.X86_OP_IMM and
+                                            instruction.original_inst.operands[1].imm == 0)
+                                                                             or (
+                                                instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and
+                                                instruction.original_inst.operands[1].type == x86_const.X86_OP_REG
+                                    and instruction.original_inst.operands[0].reg == instruction.original_inst.operands[
+                                        1].reg)):
+                            # print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
+                            #                          instruction.original_inst.op_str))
+                            pass
+                    elif instruction.original_inst.id == x86_const.X86_INS_OR:
+                        if len(instruction.original_inst.operands) == 2 and \
+                                        instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and \
                                         instruction.original_inst.operands[1].type == x86_const.X86_OP_REG and \
                                         instruction.original_inst.operands[0].reg == instruction.original_inst.operands[
                                     1].reg:
-                            new_inst_str = instruction.original_inst.insn_name(x86_const.X86_INS_CMP) + ' $0' \
+                            new_inst_str = self.insn_name(x86_const.X86_INS_CMP) + ' $0,' \
                                            + instruction.original_inst.reg_name(
                                 instruction.original_inst.operands[0].reg)
                             asm, _ = self.ks.asm(new_inst_str)
                             instruction.new_bytes = str(asm)
-                            pass
-                    pass
+                        pass
+                    elif instruction.original_inst.id == x86_const.X86_INS_AND:
+                        # print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
+                        #                          instruction.original_inst.op_str))
+                        if len(instruction.original_inst.operands) == 2:
+                            if instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM and \
+                                            instruction.original_inst.operands[0].imm == 0:
+                                new_inst_str = instruction.original_inst.mnemonic.replace('and', 'mov') + ' ' \
+                                               + instruction.original_inst.op_str
+                                asm, _ = self.ks.asm(new_inst_str)
+                                instruction.new_bytes = str(asm)
+                            elif instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and \
+                                            instruction.original_inst.operands[1].type == x86_const.X86_OP_REG and \
+                                            instruction.original_inst.operands[0].reg == \
+                                            instruction.original_inst.operands[
+                                                1].reg:
+                                new_inst_str = instruction.original_inst.insn_name(x86_const.X86_INS_CMP) + ' $0' \
+                                               + instruction.original_inst.reg_name(
+                                    instruction.original_inst.operands[0].reg)
+                                asm, _ = self.ks.asm(new_inst_str)
+                                instruction.new_bytes = str(asm)
+                                pass
+                        pass
             except Exception as e:
                 print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
                                          instruction.original_inst.op_str))
@@ -551,8 +538,8 @@ class MetaIns(object):
 
 
 class PEHandler(object):
-    def __init__(self, pe):
-        self.pe = pe
+    def __init__(self, file_path):
+        self.pe = pefile.PE(file_path)
 
     def dump(self):
         return self.pe.dump_info()
@@ -568,15 +555,6 @@ class PEHandler(object):
             if section.contains_rva(address):
                 return section
         return None
-
-    def getLastSectionPointerAndSize(self):
-        section_pointer = 0
-        section_size = 0
-        for section in self.pe.sections:
-            if section.PointerToRawData > section_pointer:
-                section_pointer = section.PointerToRawData
-                section_size = section.SizeOfRawData
-        return section_pointer, section_size
 
     def setBaseOfCode(self, new_code_pointer):
         self.pe.OPTIONAL_HEADER.BaseOfCode = new_code_pointer
