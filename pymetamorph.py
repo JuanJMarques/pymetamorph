@@ -1,7 +1,7 @@
 from __future__ import print_function
 
+import argparse
 import random
-import sys
 
 import numpy as np
 import pefile
@@ -148,9 +148,6 @@ class Pymetamorph(object):
                         jump_address = inst.original_inst.operands[0].imm
                         if inf_margin <= jump_address < sup_margin:
                             if x86_const.X86_INS_JMP == inst.original_inst.id:
-                                # if jump_address not in jmp_table \
-                                #         and jump_address not in processed_addrs:
-                                #         and jump_address not in processed_jumps \
                                 if jump_address not in processed_addrs:
                                     inst.new_bytes = str(bytearray([0x90]))
                                     inst = self.locate_by_original_address(jump_address)
@@ -158,12 +155,10 @@ class Pymetamorph(object):
                                     cont = (len(jmp_table) > 0)
                                     if cont:
                                         jump_address = jmp_table.pop()
-                                        # processed_jumps.append(jump_address)
                                         inst = self.locate_by_original_address(jump_address)
                             else:
                                 if jump_address not in jmp_table \
                                         and jump_address not in processed_addrs:
-                                    # and jump_address not in processed_jumps \
                                     jmp_table.add(jump_address)
                                 cont = (inst.next_instruction is not None)
                                 inst = inst.next_instruction
@@ -171,7 +166,6 @@ class Pymetamorph(object):
                         cont = (len(jmp_table) > 0)
                         if cont:
                             jump_address = jmp_table.pop()
-                            # processed_jumps.append(jump_address)
                             inst = self.locate_by_original_address(jump_address)
                 elif x86_const.X86_GRP_CALL in inst.original_inst.groups \
                         and inst.original_inst.operands[0].type == x86_const.X86_OP_IMM:
@@ -179,16 +173,12 @@ class Pymetamorph(object):
                     if inf_margin <= call_address < sup_margin \
                             and call_address not in processed_addrs:
                         function_calls.add(call_address)
-                        # print(
-                        #     "0x%x:\t%s\t%s" % (
-                        #     inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
                     cont = (inst.next_instruction is not None)
                     inst = inst.next_instruction
                 elif x86_const.X86_GRP_RET in inst.original_inst.groups:
                     cont = (len(jmp_table) > 0)
                     if cont:
                         jump_address = jmp_table.pop()
-                        # processed_jumps.append(jump_address)
                         inst = self.locate_by_original_address(jump_address)
                 else:
                     cont = (inst.next_instruction is not None)
@@ -308,15 +298,6 @@ class Pymetamorph(object):
 
                     except ValueError as e:
                         pass
-                if len(instruction.new_bytes) != len(instruction.original_bytes):
-                    print('-----------------------------------------------------------------------------------------')
-                    print(b'0x{:x}:\t{}\t{}\t{}'.format(
-                        instruction.original_inst.address, instruction.original_inst.mnemonic,
-                        instruction.original_inst.op_str, instruction.original_bytes))
-                    for ins in self.cs.disasm(instruction.new_bytes, offset):
-                        print(b'0x{:x}:\t{}\t{}\t{}'.format(
-                            ins.address, ins.mnemonic, ins.op_str, instruction.new_bytes))
-                    print('-----------------------------------------------------------------------------------------')
                 instruction.new_addr = offset
                 offset += len(instruction.new_bytes)
         return num_reps
@@ -347,17 +328,20 @@ class Pymetamorph(object):
             size += len(inst.new_bytes)
         return size
 
-    def permute_registers(self):
+    def permute_registers(self, probability=0.4):
         functions = self.__get_functions()
         for function in functions:
-            registers = self.get_registers_from_function(function)
-            copy = [x for x in registers]
-            random.shuffle(copy, random.random)
-            permutation_map = dict()
-            for i in range(len(registers)):
-                permutation_map[registers[i]] = copy[i]
-            self.apply_register_permutation(function, permutation_map)
-        pass
+            rndm = random.random()
+            if rndm < probability:
+                registers = self.get_registers_from_function(function)
+                copy = [x for x in registers]
+                random.shuffle(copy, random.random)
+                permutation_map = dict()
+                for i in range(len(registers)):
+                    if registers[i] != copy[i]:
+                        permutation_map[registers[i]] = copy[i]
+                if len(permutation_map) > 0:
+                    self.apply_register_permutation(function, permutation_map)
 
     @staticmethod
     def get_registers_from_function(function):
@@ -400,32 +384,30 @@ class Pymetamorph(object):
                 asm, _ = self.ks.asm(new_inst_str, instruction.new_addr)
                 instruction.new_bytes = str(bytearray(asm))
 
-    def equivalent_instruction_substitution(self):
+    def equivalent_instruction_substitution(self, probability=0.3):
         from capstone import x86_const
         for instruction in self.instructions:
             try:
                 rndm = random.random()
-                if rndm < 0.3:
+                if rndm < probability:
                     if instruction.original_inst.id == x86_const.X86_INS_ADD:
                         if len(instruction.original_inst.operands) == 2 \
                                 and instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
                             new_inst_str = instruction.original_inst.mnemonic.replace('add', 'sub') + ' ' \
-                                           + instruction.original_inst.op_str.replace(
-                                '{:x}'.format(instruction.original_inst.operands[0].imm),
-                                '{:x}'.format(self.convert_to_unsigned(-1 * instruction.original_inst.operands[0].imm,
-                                                                       instruction.original_inst.operands[0].size)))
-                            asm, _ = self.ks.asm(new_inst_str)
-                            instruction.new_bytes = str(asm)
+                                           + instruction.original_inst.op_str.replace('$', '$-')
+                            asm, _ = self.ks.asm(new_inst_str, instruction.original_addr)
+                            instruction.new_bytes = str(bytearray(asm))
+                            for i in self.cs.disasm(instruction.new_bytes, instruction.original_addr):
+                                instruction.original_inst = i
                     elif instruction.original_inst.id == x86_const.X86_INS_SUB:
                         if len(instruction.original_inst.operands) == 2 \
                                 and instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM:
                             new_inst_str = instruction.original_inst.mnemonic.replace('sub', 'add') + ' ' \
-                                           + instruction.original_inst.op_str.replace(
-                                '{:x}'.format(instruction.original_inst.operands[0].imm),
-                                '{:x}'.format(self.convert_to_unsigned(-1 * instruction.original_inst.operands[0].imm,
-                                                                       instruction.original_inst.operands[0].size)))
-                            asm, _ = self.ks.asm(new_inst_str)
-                            instruction.new_bytes = str(asm)
+                                           + instruction.original_inst.op_str.replace('$', '$-')
+                            asm, _ = self.ks.asm(new_inst_str, instruction.original_addr)
+                            instruction.new_bytes = str(bytearray(asm))
+                            for i in self.cs.disasm(instruction.new_bytes, instruction.original_addr):
+                                instruction.original_inst = i
                     elif instruction.original_inst.id == x86_const.X86_INS_XOR:
                         if len(instruction.original_inst.operands) == 2 and ((instruction.original_inst.operands[
                                                                                   0].type == x86_const.X86_OP_IMM and
@@ -439,31 +421,42 @@ class Pymetamorph(object):
                                                 instruction.original_inst.operands[1].type == x86_const.X86_OP_REG
                                     and instruction.original_inst.operands[0].reg == instruction.original_inst.operands[
                                         1].reg)):
-                            # print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
-                            #                          instruction.original_inst.op_str))
-                            pass
+                            if instruction.original_inst.operands[0].type == x86_const.X86_OP_REG:
+                                new_inst_str = instruction.original_inst.mnemonic.replace('xor', 'mov') + ' ' \
+                                               + '$0,%' + instruction.original_inst.reg_name(
+                                    instruction.original_inst.operands[0].reg)
+                            else:
+                                new_inst_str = instruction.original_inst.mnemonic.replace('xor', 'mov') + ' ' \
+                                               + '$0,%' + instruction.original_inst.reg_name(
+                                    instruction.original_inst.operands[1].reg)
+                            asm, _ = self.ks.asm(new_inst_str, instruction.original_addr)
+                            instruction.new_bytes = str(bytearray(asm))
+                            for i in self.cs.disasm(instruction.new_bytes, instruction.original_addr):
+                                instruction.original_inst = i
                     elif instruction.original_inst.id == x86_const.X86_INS_OR:
                         if len(instruction.original_inst.operands) == 2 and \
                                         instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and \
                                         instruction.original_inst.operands[1].type == x86_const.X86_OP_REG and \
                                         instruction.original_inst.operands[0].reg == instruction.original_inst.operands[
                                     1].reg:
-                            new_inst_str = self.insn_name(x86_const.X86_INS_CMP) + ' $0,' \
+                            new_inst_str = self.insn_name(x86_const.X86_INS_CMP) + ' $0, %' \
                                            + instruction.original_inst.reg_name(
                                 instruction.original_inst.operands[0].reg)
-                            asm, _ = self.ks.asm(new_inst_str)
-                            instruction.new_bytes = str(asm)
-                        pass
+                            asm, _ = self.ks.asm(new_inst_str, instruction.original_addr)
+                            instruction.new_bytes = str(bytearray(asm))
+                            for i in self.cs.disasm(instruction.new_bytes, instruction.original_addr):
+                                instruction.original_inst = i
                     elif instruction.original_inst.id == x86_const.X86_INS_AND:
-                        # print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
-                        #                          instruction.original_inst.op_str))
                         if len(instruction.original_inst.operands) == 2:
                             if instruction.original_inst.operands[0].type == x86_const.X86_OP_IMM and \
                                             instruction.original_inst.operands[0].imm == 0:
-                                new_inst_str = instruction.original_inst.mnemonic.replace('and', 'mov') + ' ' \
+                                new_inst_str = instruction.original_inst.mnemonic.replace('and', self.insn_name(
+                                    x86_const.X86_INS_MOV)) + ' ' \
                                                + instruction.original_inst.op_str
-                                asm, _ = self.ks.asm(new_inst_str)
-                                instruction.new_bytes = str(asm)
+                                asm, _ = self.ks.asm(new_inst_str, instruction.original_addr)
+                                instruction.new_bytes = str(bytearray(asm))
+                                for i in self.cs.disasm(instruction.new_bytes, instruction.original_addr):
+                                    instruction.original_inst = i
                             elif instruction.original_inst.operands[0].type == x86_const.X86_OP_REG and \
                                             instruction.original_inst.operands[1].type == x86_const.X86_OP_REG and \
                                             instruction.original_inst.operands[0].reg == \
@@ -472,15 +465,12 @@ class Pymetamorph(object):
                                 new_inst_str = instruction.original_inst.insn_name(x86_const.X86_INS_CMP) + ' $0' \
                                                + instruction.original_inst.reg_name(
                                     instruction.original_inst.operands[0].reg)
-                                asm, _ = self.ks.asm(new_inst_str)
-                                instruction.new_bytes = str(asm)
-                                pass
-                        pass
+                                asm, _ = self.ks.asm(new_inst_str, instruction.original_addr)
+                                instruction.new_bytes = str(bytearray(asm))
+                                for i in self.cs.disasm(instruction.new_bytes, instruction.original_addr):
+                                    instruction.original_inst = i
             except Exception as e:
-                print("0x%x:\t%s\t%s" % (instruction.original_inst.address, instruction.original_inst.mnemonic,
-                                         instruction.original_inst.op_str))
-                raise e
-        print('')
+                pass
 
     def insn_name(self, ins_id):
         from capstone import _cs as cs
@@ -578,23 +568,58 @@ class PEHandler(object):
         self.pe.write(filename)
 
 
-def main(file_path):
-    meta = Pymetamorph(file_path, load_file=True, debug=True)
-    meta.equivalent_instruction_substitution()
-    meta.permute_registers()
-    meta.shuffle_functions()
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description='Pymetamorph: a metamorphic engine for windowns 32 bits executables made in python',
+        epilog='if no optionals arguments are passed the default behaviour is the same as '
+               'pymetamorph -irsn -ip 0.3 -rp 0.4')
+    parser.add_argument('-i', '--instruction_substitution', action='store_true', required=False,  # default=True,
+                        help='Perform equivalent instruction substitution, default value is true')
+    parser.add_argument('-ip', '--instruction_substitution_probability', type=float, required=False,  # default=0.3,
+                        help='Probability to perform an equivalent substitution to an instruction, default value is 0.3')
+    parser.add_argument('-r', '--register_swap', action='store_true', required=False,  # default=True,
+                        help='Perform register swapping, default value is true')
+    parser.add_argument('-rp', '--register_swapping_probability', type=float, required=False,  # default=0.4,
+                        help='Probability to swap registers in a subrutine, default value is 0.4')
+    parser.add_argument('-s', '--subrutine_swapping', action='store_true', required=False,  # default=False,
+                        help='Perform swapping positions between the programs subrutines, default value is false')
+    parser.add_argument('-n', '--nop_insert', action='store_true', required=False,  # default=True,
+                        help='Insert NOP instruction randomly in the programs code, default value is true')
+    parser.add_argument('-sf', '--shuffle_code_blocks', action='store_true', required=False,  # default=True,
+                        help='Divide the code into blocks and shuffle their position')
+    parser.add_argument('input_file', type=str, help='The originals path to the executable file')
+    parser.add_argument('output_file', type=str, help='The path of the new executable file')
+
+    args = parser.parse_args()
+    if not (
+                    args.instruction_substitution or args.nop_insert or args.register_swap or args.shuffle_code_blocks or args.subrutine_swapping):
+        args.instruction_substitution = True
+        args.nop_insert = True
+        args.register_swap = True
+        args.shuffle_code_blocks = True
+        args.subrutine_swapping = False
+    if args.instruction_substitution and args.instruction_substitution_probability is None:
+        args.instruction_substitution_probability = 0.3
+    if args.register_swap and args.register_swapping_probability is None:
+        args.register_swapping_probability = 0.4
+    return args
+
+
+def main():
+    args = parse_args()
+    meta = Pymetamorph(args.input_file, load_file=True)
+    if args.instruction_substitution:
+        meta.equivalent_instruction_substitution(args.instruction_substitution_probability)
+    if args.register_swap:
+        meta.permute_registers(args.register_swapping_probability)
+    if args.subrutine_swapping:
+        meta.shuffle_functions()
+    if args.shuffle_code_blocks:
+        meta.shuffle_blocks()
     meta.update_label_table()
     meta.apply_label_table()
-    meta.print_disass('original.asm')
-    meta.write_file('meta.exe')
-    meta.print_new_dissas('new.asm')
+    meta.write_file(args.output_file)
 
 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        main(sys.argv[1])
-
-'''print(
-                "0x%x:\t%s\t%s" % (inst.original_inst.address, inst.original_inst.mnemonic, inst.original_inst.op_str))
-            print('{},{},{},{}'.format(inst.original_inst.id, inst.original_inst.groups,
-                                       inst.original_inst.regs_read, inst.original_inst.regs_write))'''
+    main()
