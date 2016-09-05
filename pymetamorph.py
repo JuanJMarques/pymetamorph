@@ -3,7 +3,6 @@ from __future__ import print_function
 import argparse
 import random
 
-import numpy as np
 import pefile
 from capstone import *
 from keystone import *
@@ -476,14 +475,6 @@ class Pymetamorph(object):
         from capstone import _cs as cs
         return cs.cs_insn_name(self.cs.csh, ins_id).decode('ascii')
 
-    @staticmethod
-    def convert_to_unsigned(number, size):
-        if size == 1:
-            return np.uint8(number)
-        elif size == 2:
-            return np.uint16(number)
-        else:
-            return np.uint32(number)
 
 
 class MetaIns(object):
@@ -522,10 +513,6 @@ class MetaIns(object):
     @property
     def size(self):
         return len(self.new_bytes)
-
-
-# self.size = original_inst.size
-
 
 class PEHandler(object):
     def __init__(self, file_path):
@@ -572,7 +559,7 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description='Pymetamorph: a metamorphic engine for windowns 32 bits executables made in python',
         epilog='if no optionals arguments are passed the default behaviour is the same as '
-               'pymetamorph -irsn -ip 0.3 -rp 0.4')
+               'pymetamorph -irsfn -ip 0.3 -rp 0.4')
     parser.add_argument('-i', '--instruction_substitution', action='store_true', required=False,  # default=True,
                         help='Perform equivalent instruction substitution, default value is true')
     parser.add_argument('-ip', '--instruction_substitution_probability', type=float, required=False,  # default=0.3,
@@ -581,7 +568,7 @@ def parse_args():
                         help='Perform register swapping, default value is true')
     parser.add_argument('-rp', '--register_swapping_probability', type=float, required=False,  # default=0.4,
                         help='Probability to swap registers in a subrutine, default value is 0.4')
-    parser.add_argument('-s', '--subrutine_swapping', action='store_true', required=False,  # default=False,
+    parser.add_argument('-ss', '--subrutine_swapping', action='store_true', required=False,  # default=False,
                         help='Perform swapping positions between the programs subrutines, default value is false')
     parser.add_argument('-n', '--nop_insert', action='store_true', required=False,  # default=True,
                         help='Insert NOP instruction randomly in the programs code, default value is true')
@@ -608,9 +595,9 @@ def parse_args():
 def main():
     args = parse_args()
     meta = Pymetamorph(args.input_file, load_file=True)
-    if args.instruction_substitution:
+    if args.instruction_substitution and args.instruction_substitution_probability > 0:
         meta.equivalent_instruction_substitution(args.instruction_substitution_probability)
-    if args.register_swap:
+    if args.register_swap and args.register_swapping_probability > 0:
         meta.permute_registers(args.register_swapping_probability)
     if args.subrutine_swapping:
         meta.shuffle_functions()
