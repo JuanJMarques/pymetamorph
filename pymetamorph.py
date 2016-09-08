@@ -557,8 +557,8 @@ class PEHandler(object):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Pymetamorph: a metamorphic engine for windowns 32 bits executables made in python',
-        epilog='if no optionals arguments are passed the default behaviour is the same as '
+        description='Pymetamorph: a metamorphic engine for Windowns 32 bits executables made in python',
+        epilog='if no optionals arguments are passed the default behavior is the same as '
                'pymetamorph -i -r -sf -n -ip 0.3 -rp 0.4')
     parser.add_argument('-i', '--instruction_substitution', action='store_true', required=False,  # default=True,
                         help='Perform equivalent instruction substitution, default value is true')
